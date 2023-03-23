@@ -1,170 +1,145 @@
-#include <Arduino.h>
+#if defined(ESP32) || defined(PICO_RP2040)
 #include <WiFi.h>
+#elif defined(ESP8266)
+#include <ESP8266WiFi.h>
+#endif
+
+#include "FS.h"
+
 #include <Firebase_ESP_Client.h>
-#include <Wire.h>
-#include "time.h"
-#include "addons/TokenHelper.h"
-#include "addons/RTDBHelper.h"
 
-#define pinoPir 0
-#define pinoPiezo 2
-#define pinoBotao 4
+#include <addons/TokenHelper.h>
 
+#define API_KEY "AIzaSyCr1m4GZ9pY9oAF-FDEOkKEfJjc2ONydOM"
+#define FIREBASE_PROJECT_ID "dgr-alarmes"
 
-//VERIFICAR VARIAVEIS WI-FI
-const char* ssid = "VIVOFIBRA-1848"; //MUDAR SSID E SENHA
-const char* senha = "emotionalDamage";
+#define USER_EMAIL "root@root.com"
+#define USER_PASSWORD "root123"
 
-//Enter Firebase web API Key
-#define API_KEY "AIzaSyCZF489PCdctl1v_B96gW777jKdhkqysNk" //OCULTAR SE FOR PUBLICO, criar um secrets.h
+#define INI_FILE "/net.ini"
 
-// Enter Authorized Email and Password
-#define USER_EMAIL "projetohardware2023@gmail.com"
-#define USER_PASSWORD "clone12" //OCULTAR
+FirebaseData fbdo;
 
-// Enter Realtime Database URL
-#define DATABASE_URL "projeto-hardware-646d2-default-rtdb.firebaseio.com"
-
-FirebaseData Firebase_dataObject;
-FirebaseAuth authentication;
+FirebaseAuth auth;
 FirebaseConfig config;
 
-String UID;
+String macAddress;
 
-// Database main path 
-String database_path;
+// -------------------- SETUP --------------------
 
-String controle_path = "/controle";
-String horario_path = "/horario";
-
-//Updated in every loop
-String parent_path;
-
-int t_horario;
-
-FirebaseJson json;
-
-const char* ntpServer = "pool.ntp.org";
-
-
-//var globais
-int alarmeTocando = 0;
-int leituraPir = 0;
-int alarmeAcionado = 0; //SIMULA UM DADO QUE VEM DO BANCO
-int comando = 0; //SIMULA UM DADO QUE VEM DO BANCO
-float tempoLigado;
-
-//pooling de 30s
-unsigned long previous_time = 0;
-unsigned long Delay = 30000;
-
-void setup() {
-
+void setup(){
   Serial.begin(115200);
-  pinMode(pinoPir, INPUT);
-  pinMode(pinoPiezo, OUTPUT);
-  pinMode(pinoBotao, INPUT);
+
+  if (!SPIFFS.begin())
+    while (1)
+      Serial.println("SPIFFS.begin() falhou");
+
+  macAddress = WiFi.macAddress();
+
+  File file = iniFile();
+
+  String buffer = file.readString();
+
+  String ssid = buffer.substring(0,buffer.indexOf('\n'));
+  String passphrase = buffer.substring(buffer.indexOf('\n')+1);
   
-  setup_wifi();
-  configurarFirebase();
-  buscarUID();
-  database_path = "/Dados/" + UID + "/Leituras_Alarme";
-}
+  file.close();
+  WiFi.begin(ssid, passphrase);
 
-void loop() {
-  
-  if (Firebase.ready() && (millis() - previous_time > Delay || previous_time == 0)){
-    parent_path= database_path + "/" + String(t_horario);
-    enviarComando(); 
+  if (testWifi())
+  {
+    Serial.println("Conectado ao Wi-fi com sucesso!");
   }
-
-}
-void setup_wifi() {
-
-  delay(1000);
-  Serial.println("");
-  Serial.print("Conectando com ");
-  Serial.println(ssid);
-
-  WiFi.begin(ssid, senha);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi conectado");
-  Serial.println("IP: ");
-  Serial.println(WiFi.localIP());
-}
-
-void enviarComando(){
-  //CRIAR NO FLUTTER UM ALARME_ACIONADO E COMANDO_ALARME PRA FUNCIONAR
-  if(Firebase.getInt("ALARME_ACIONADO") == 1){//RECEBER UM INTEIRO QUE ACIONA O ALARME
-    if (leituraPir == HIGH){            
-      digitalWrite(pinoPiezo, HIGH);
-      leituraPir = digitalRead(pinoPir); 
-      t_horario = PegarHorario();
-      Serial.print ("horario: ");
-      Serial.println (t_horario);
-      //json.set(controle_path.c_str(), String(bme.readTemperature()));
-      json.set(horario_path, String(t_horario));
-      Serial.printf("Set json... %s\n", Firebase.RTDB.setJSON(&Firebase_dataObject, parent_path.c_str(), &json) ? "ok" : Firebase_dataObject.errorReason().c_str());  
-      
-      if (alarmeTocando == LOW) 
-      {
-        Serial.println("Movimento detectado!"); 
-        alarmeTocando = HIGH;
-      }
-    } 
-    else if(Firebase.getInt("COMANDO_ALARME") == 1 || (digitalRead(botaoPin) == 1))//SE CLICOU PARA DESLIGAR VIA APP OU CLICOU BOTAO NO MICROCONTROLADOR
-    {
-      digitalWrite(pinoPiezo, LOW); // turn LED OFF
-
-      if (alarmeTocando == HIGH)
-      {
-        Serial.println("Acabou movimento!");  // print on output change
-        alarmeTocando = LOW;
-      }
-    } 
-  }else{
-    digitalWrite(pinoPir, 0);
-  } 
-}
-
-//horario
-unsigned long PegarHorario() {
-  time_t now;
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return(0);
-  }
-  time(&now);
-  return now;
-}
-
-void buscarUID(){
-
-  Serial.println("Pegando UID do usuario...");
-  while ((authentication.token.uid) == "") {
-    Serial.print('.');
-    delay(1000);
-  }
-  UID = authentication.token.uid.c_str();
-  Serial.print("User UID: ");
-  Serial.println(UID);
-}
-
-void configurarFirebase(){
-  configTime(0, 0, ntpServer);
 
   config.api_key = API_KEY;
-  authentication.user.email = USER_EMAIL;
-  authentication.user.password = USER_PASSWORD;
-  config.database_url = DATABASE_URL;
+  auth.user.email = USER_EMAIL;
+  auth.user.password = USER_PASSWORD;
 
-  config.token_status_callback = tokenStatusCallback; 
-  config.max_token_generation_retry = 5;
-  Firebase.begin(&config, &authentication);
+  config.token_status_callback = tokenStatusCallback; // see addons/TokenHelper.h
+
+  #if defined(ESP8266)
+    // In ESP8266 required for BearSSL rx/tx buffer for large data handle, increase Rx size as needed.
+    fbdo.setBSSLBufferSize(2048 /* Rx buffer size in bytes from 512 - 16384 */, 2048 /* Tx buffer size in bytes from 512 - 16384 */);
+  #endif
+
+    // Limit the size of response payload to be collected in FirebaseData
+  fbdo.setResponseSize(2048);
+
+  Firebase.begin(&config, &auth);
+
+  Firebase.reconnectWiFi(true);
+
+  String documentPath = "device/"+macAddress+"";
+  //String mask = WiFi.macAddress();
+  //String mask = "teste";
+
+  if (Firebase.ready()){
+    if (!Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str())){
+      Serial.println("Dispositivo não encontrado no firebase, criando documento...");
+      FirebaseJson content;
+      String documentPath = "device/"+macAddress+"";
+      content.set("fields/active/booleanValue", false);
+      content.set("fields/triggered/booleanValue", false);
+      if (Firebase.Firestore.createDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw()))
+        Serial.printf("Dispositivo Criado\n%s\n", fbdo.payload().c_str());
+      else
+        Serial.println(fbdo.errorReason());
+      }
+    else
+      Serial.println(fbdo.errorReason());
+  }
+  else{
+    Serial.println("Problema na conexão com Firebase.");  
+  }
+}
+
+// -------------------- LOOP --------------------
+
+void loop(){
+
+}
+
+// -------------------- FUNCTIONS --------------------
+
+File iniFile(){
+  File file = SPIFFS.open(INI_FILE, "r");
+  if (!file) {
+    Serial.print("Arquivo ");
+    Serial.print(INI_FILE);
+    Serial.print(" não existe");
+    Serial.println("Criando novo arquivo...");
+
+    File file = SPIFFS.open(INI_FILE, "w");
+    //hard code
+    int bytesWritten = file.print("ALHN-D2D9 2.4G\nPwbDv7N=ay");
+    if (bytesWritten > 0) {
+      Serial.println("Arquivo foi escrito com sucesso");
+      Serial.println(bytesWritten);
+   
+    } else {
+      Serial.println("Falha ao escrever arquivo");
+    }
+ 
+    file.close();
+    file = SPIFFS.open(INI_FILE, "r");
+    }
+  return file;
+}
+
+bool testWifi(void)
+{
+  int c = 0;
+  Serial.println("Esperando por conexão Wi-fi");
+  while ( c < 20 ) {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      return true;
+    }
+    delay(500);
+    Serial.print("*");
+    c++;
+  }
+  Serial.println("");
+  Serial.println("Tempo para conexão esgotado");
+  return false;
 }
