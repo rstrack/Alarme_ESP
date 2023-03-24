@@ -1,3 +1,5 @@
+#include <NTPClient.h>
+
 #include <WifiConfig.h>
 
 #if defined(ESP32) || defined(PICO_RP2040)
@@ -7,6 +9,8 @@
 #endif
 
 #include "FS.h"
+
+#include <WiFiUdp.h>
 
 #include <Firebase_ESP_Client.h>
 
@@ -19,11 +23,21 @@
 
 #define INI_FILE "/net.ini"
 
+//tipos do objeto log:
+#define LOG_TYPE_ACTIVATED 0
+#define LOG_TYPE_DISABLED 1
+#define LOG_TYPE_TRIGGERED 2
+
 FirebaseData fbdo;
 FirebaseData stream;
 
 FirebaseAuth auth;
 FirebaseConfig config;
+
+FirebaseJson json;
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 String macAddress;
 
@@ -64,6 +78,11 @@ void setup(){
     Serial.println("Conectado ao Wi-fi com sucesso!");
   }
 
+  timeClient.begin();
+  while(!timeClient.update()) {
+    timeClient.forceUpdate();
+  }
+
   firebaseConfig();
 
   if (!Firebase.RTDB.beginStream(&stream, "/device/"+macAddress+""))
@@ -95,6 +114,7 @@ void loop(){
     if(digitalRead(5)){
       if(!triggeredAlarm){
         Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", true);
+        createLog(LOG_TYPE_TRIGGERED);
       }
     }
   }else{
@@ -201,6 +221,9 @@ void streamCallback(FirebaseStream data){
     Serial.println(data.dataPath());
     if(data.dataPath()=="/active"){
       activeAlarm = !activeAlarm;
+      if(activeAlarm)
+        createLog(LOG_TYPE_ACTIVATED);
+      else createLog(LOG_TYPE_DISABLED);
       Serial.print("Alarme ativo: ");
       Serial.println(activeAlarm);
     }else if (data.dataPath()=="/triggered"){
@@ -244,5 +267,17 @@ void alarm(){
     tone(4, freq, _time);
     delay(_time);
     freq = freq - 100;
+  }
+} 
+
+void createLog(int TYPE){
+  time_t now = timeClient.getEpochTime();
+  String logData = "{\"time\": " + String(now) + ", \"type\": \"" + TYPE + "\"}";
+  json.setJsonData(logData);
+  if (Firebase.RTDB.pushJSON(&fbdo, "device/"+macAddress+"/logs", &json)) {
+    Serial.println("Log added successfully");
+  } else {
+    Serial.println("Error adding log");
+    Serial.println(fbdo.errorReason().c_str());
   }
 }
