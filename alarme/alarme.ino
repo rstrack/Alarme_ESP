@@ -77,6 +77,8 @@ void setup(){
   {
     Serial.println("Conectado ao Wi-fi com sucesso!");
   }
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
 
   timeClient.begin();
   while(!timeClient.update()) {
@@ -113,13 +115,17 @@ void loop(){
     //verifica sensor de proximidade e dispara o alarme
     if(digitalRead(5)){
       if(!triggeredAlarm){
-        Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", true);
-        createLog(LOG_TYPE_TRIGGERED);
+        if (Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", true))
+          createLog(LOG_TYPE_TRIGGERED);
+        else
+          Serial.println(fbdo.errorReason().c_str());
       }
     }
   }else{
-    if(triggeredAlarm)
-      Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", false);
+    if(triggeredAlarm){
+      if(!Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", false))
+        Serial.println(fbdo.errorReason().c_str());
+    }
   }
 }
 
@@ -188,18 +194,17 @@ void firebaseConfig(){
 
   Firebase.reconnectWiFi(true);
 
-  String documentPath = "device/"+macAddress+"";
+  String path = "device/"+macAddress+"";
   //String mask = WiFi.macAddress();
   //String mask = "teste";
 
   if (Firebase.ready()){
-    if (!Firebase.RTDB.get(&fbdo, documentPath.c_str())){
+    if (!Firebase.RTDB.get(&fbdo, path.c_str())){
       Serial.println("Dispositivo não encontrado no firebase, criando documento...");
-      String documentPath = "device/"+macAddress+"";
-      FirebaseJson content;
-      content.set("active", false);
-      content.set("triggered", false);
-      if (Firebase.RTDB.set(&fbdo, documentPath, &content))
+      json.clear();
+      json.add("active", false);
+      json.add("triggered", false);
+      if (Firebase.RTDB.set(&fbdo, path, &json))
         Serial.printf("Dispositivo Criado\n%s\n", fbdo.payload().c_str());
       else
         Serial.println(fbdo.errorReason());
@@ -240,6 +245,7 @@ void streamTimeoutCallback(bool timeout)
 {
   if (timeout)
     Serial.println("stream timed out, resuming...\n");
+    Firebase.reconnectWiFi(true);
 
   if (!stream.httpConnected())
     Serial.printf("error code: %d, reason: %s\n\n", stream.httpCode(), stream.errorReason().c_str());
@@ -268,13 +274,14 @@ void alarm(){
     delay(_time);
     freq = freq - 100;
   }
-} 
+}
 
 void createLog(int TYPE){
   time_t now = timeClient.getEpochTime();
-  String logData = "{\"time\": " + String(now) + ", \"type\": \"" + TYPE + "\"}";
-  json.setJsonData(logData);
-  if (Firebase.RTDB.pushJSON(&fbdo, "device/"+macAddress+"/logs", &json)) {
+  json.clear();
+  json.add("time", now);
+  json.add("type", TYPE);
+  if (Firebase.RTDB.pushJSON(&fbdo, "log/"+macAddress+"", &json)) {
     Serial.println("Log added successfully");
   } else {
     Serial.println("Error adding log");
