@@ -28,6 +28,15 @@
 #define LOG_TYPE_DISABLED 1
 #define LOG_TYPE_TRIGGERED 2
 
+//delay para prevenção de leituras duplicadas, spam de clicks e etc
+#define SELF_UPDATE_DELAY 3000
+
+//intervalo de tempo para geração de novo token do firebase
+#define REFRESH_TOKEN_INTERVAL (30*60*1000)
+
+//TESTE
+unsigned int timer;
+
 FirebaseData fbdo;
 FirebaseData stream;
 
@@ -48,6 +57,9 @@ bool triggeredAlarm = false;
 int freq = 500;
 int _time = 10;
 bool up = true;
+
+unsigned int selfUpdateTime;
+unsigned int alarmTime;
 
 // -------------------- SETUP --------------------
 
@@ -96,16 +108,20 @@ void setup(){
 
   if(!Firebase.RTDB.setBool(&fbdo, "/device/"+macAddress+"/triggered", false))
     Serial.println(fbdo.errorReason().c_str());
-
-  //delay para o comando acima não ser reconhecido pelo stream
-  delay(200);
   
   Firebase.RTDB.setStreamCallback(&stream, streamCallback, streamTimeoutCallback);
+  selfUpdateTime = millis();
+  timer = millis();
 }
 
 // -------------------- LOOP --------------------
 
 void loop(){
+  Firebase.ready();
+  if(millis()-timer > 5000){
+    Serial.println(ESP.getFreeHeap());
+    timer = millis();
+  }
   //lógica só é aceita se o alarme estiver ligado
   if(activeAlarm){
     //se alarme estiver disparado, emite som
@@ -115,10 +131,13 @@ void loop(){
     //verifica sensor de proximidade e dispara o alarme
     if(digitalRead(5)){
       if(!triggeredAlarm){
+        triggeredAlarm = true;
+        selfUpdateTime = millis();
         if (Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", true))
           createLog(LOG_TYPE_TRIGGERED);
         else
           Serial.println(fbdo.errorReason().c_str());
+        alarmTime = millis();
       }
     }
   }else{
@@ -181,6 +200,8 @@ void firebaseConfig(){
 
   config.token_status_callback = tokenStatusCallback; // see addons/TokenHelper.h
 
+  config.signer.preRefreshSeconds = 45 * 60;
+
   #if defined(ESP8266)
     // In ESP8266 required for BearSSL rx/tx buffer for large data handle, increase Rx size as needed.
     fbdo.setBSSLBufferSize(2048 /* Rx buffer size in bytes from 512 - 16384 */, 2048 /* Tx buffer size in bytes from 512 - 16384 */);
@@ -219,25 +240,28 @@ void firebaseConfig(){
 
 void streamCallback(FirebaseStream data){
   if (data.dataType() == "null") {
-    Serial.println("No data available");
+    Serial.println("Sem dados disponíveis no callback da stream de dados");
   }
   else{
-    Serial.println("Atualização recebida");
-    Serial.println(data.dataPath());
-    if(data.dataPath()=="/active"){
-      activeAlarm = !activeAlarm;
-      if(activeAlarm)
-        createLog(LOG_TYPE_ACTIVATED);
-      else createLog(LOG_TYPE_DISABLED);
-      Serial.print("Alarme ativo: ");
-      Serial.println(activeAlarm);
-    }else if (data.dataPath()=="/triggered"){
-      triggeredAlarm = !triggeredAlarm;
-      Serial.print("Alarme disparado: ");
-      Serial.println(triggeredAlarm);
-      freq=500;
-      up = true;
-    }
+    if(millis() - selfUpdateTime > SELF_UPDATE_DELAY){
+      Serial.println("Atualização recebida");
+      Serial.println(data.dataPath());
+      if(data.dataPath()=="/active"){
+        activeAlarm = !activeAlarm;
+        
+        if(activeAlarm)
+          createLog(LOG_TYPE_ACTIVATED);
+        else createLog(LOG_TYPE_DISABLED);
+        Serial.print("Alarme ativo: ");
+        Serial.println(activeAlarm);
+      }else if (data.dataPath()=="/triggered"){
+        triggeredAlarm = !triggeredAlarm;
+        Serial.print("Alarme disparado: ");
+        Serial.println(triggeredAlarm);
+        freq=500;
+        up = true;
+      }
+    }else Serial.println("Dados modificados pelo próprio dispositivo e/ou spam, ignorando...");
   }
 }
 
@@ -245,35 +269,43 @@ void streamTimeoutCallback(bool timeout)
 {
   if (timeout)
     Serial.println("stream timed out, resuming...\n");
-    Firebase.reconnectWiFi(true);
 
   if (!stream.httpConnected())
     Serial.printf("error code: %d, reason: %s\n\n", stream.httpCode(), stream.errorReason().c_str());
 }
 
 void alarm(){
-  if (up && freq < 1800){
-    tone(4, freq, _time);
-    delay(_time);
-    freq = freq + 100;
-  }
-  else if(up && freq == 1800){
-    up = false;
-    tone(4, freq, _time);
-    delay(_time);
-    freq = freq - 100;
-  }
-  else if (!up && freq==500){
-    up = true;
-    tone(4, freq, _time);
-    delay(_time);
-    freq = freq + 100;
+  if(millis()-alarmTime< 5*60*1000){
+    if (up && freq < 1800){
+      tone(4, freq, _time);
+      delay(_time);
+      freq = freq + 100;
+    }
+    else if(up && freq == 1800){
+      up = false;
+      tone(4, freq, _time);
+      delay(_time);
+      freq = freq - 100;
+    }
+    else if (!up && freq==500){
+      up = true;
+      tone(4, freq, _time);
+      delay(_time);
+      freq = freq + 100;
+    }
+    else{
+      tone(4, freq, _time);
+      delay(_time);
+      freq = freq - 100;
+    }
   }
   else{
-    tone(4, freq, _time);
-    delay(_time);
-    freq = freq - 100;
+    triggeredAlarm = false;
+    selfUpdateTime = millis();
+    if(!Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", false))
+        Serial.println(fbdo.errorReason().c_str());
   }
+  
 }
 
 void createLog(int TYPE){
@@ -282,7 +314,8 @@ void createLog(int TYPE){
   json.add("time", now);
   json.add("type", TYPE);
   if (Firebase.RTDB.pushJSON(&fbdo, "log/"+macAddress+"", &json)) {
-    Serial.println("Log added successfully");
+    Serial.print("Registro adicionado: tipo ");
+    Serial.println(TYPE);
   } else {
     Serial.println("Error adding log");
     Serial.println(fbdo.errorReason().c_str());
