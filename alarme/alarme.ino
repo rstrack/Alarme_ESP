@@ -1,19 +1,19 @@
-#include <time.h>
-#include <esp_wifi.h>
-#include <WiFi.h>
-#include <Firebase_ESP_Client.h>
-#include <addons/TokenHelper.h>
-#include <WifiConfig.h>
 #include <BluetoothSerial.h>
+#include <Firebase_ESP_Client.h>
+#include <Secrets.h>
+#include <time.h>
+#include <WiFi.h>
+#include <addons/TokenHelper.h>
 
 #define DATABASE_URL "https://dgr-alarmes-default-rtdb.firebaseio.com/"
 #define LOG_TYPE_ACTIVATED 0
 #define LOG_TYPE_DISABLED 1
 #define LOG_TYPE_TRIGGERED 2
 
-#define PIR_PIN 2
-#define BUZZER_PIN 4
-#define RESET_PIN 23
+#define PIR_PIN 13
+#define BUZZER_PIN 14
+#define RF_PIN 27
+#define RESET_PIN 33
 
 #define RESET_DELAY 3000
 #define SELF_UPDATE_DELAY 3000
@@ -25,14 +25,15 @@ FirebaseData stream;
 FirebaseJson json;
 
 String macAddress;
+unsigned int lastControlClickTime = 0;
 unsigned int selfUpdateTime;
-unsigned int alarmTime;
 unsigned int resetTime;
 bool resetButtonPressed = false;
 
 bool activeAlarm;
 bool triggeredAlarm = false;
 
+const char* ntpServer = "pool.ntp.org";
 // -------------------- FUNÇÕES --------------------
 
 bool testWifi(void)
@@ -109,7 +110,7 @@ void streamCallback(FirebaseStream data){
         triggeredAlarm = data.boolData();
         Serial.print(F("Alarme disparado: "));
         Serial.println(triggeredAlarm);
-        if(!triggeredAlarm) noTone(BUZZER_PIN);
+        if(!triggeredAlarm) digitalWrite(BUZZER_PIN, HIGH);
       }
     }else Serial.println(F("Dados modificados pelo próprio dispositivo e/ou spam, ignorando..."));
   }
@@ -128,34 +129,22 @@ void streamTimeoutCallback(bool timeout){
 }
 
 void BTWifiSetup(){
-  BluetoothSerial SerialBT; 
-  SerialBT.begin("DGR-"+random(9999));
+  BluetoothSerial SerialBT;
+  String deviceName = "DGR-"+String(random(9999));
+  SerialBT.begin(deviceName, true);
   Serial.println(F("Esperando credenciais Wi-Fi via Bluetooth..."));
   while(1){
-    Serial.print(F("."));
     if (SerialBT.available()>0){
       String data = SerialBT.readString();
       Serial.println(data);
-      return
+      WiFi.begin(data.substring(0,data.indexOf('\n')).c_str(), data.substring(data.indexOf('\n')+1).c_str());
+      return;
     }
   }  
 }
 
-void alarm(){
-  if(millis()-alarmTime< 5*60*1000){
-    tone(BUZZER_PIN, 1000);
-  }
-  else{
-    triggeredAlarm = false;
-    noTone(BUZZER_PIN);
-    selfUpdateTime = millis();
-    if(!Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", false))
-        Serial.println(fbdo.errorReason().c_str());
-  }
-}
-
 void createLog(int TYPE){
-  time_t now = time(NULL);
+  time_t now = getTime();
   json.clear();
   json.add("time", now);
   json.add("type", TYPE);
@@ -169,8 +158,20 @@ void createLog(int TYPE){
 }
 
 void resetConfig(){
-
+  WiFi.disconnect();
+  delay(3000);
   ESP.restart();  
+}
+
+unsigned long getTime() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    //Serial.println("Failed to obtain time");
+    return(0);
+  }
+  time(&now);
+  return now;
 }
 
 //-------------------------- SETUP -------------------------
@@ -178,6 +179,7 @@ void setup(){
   Serial.begin(115200);
   pinMode(PIR_PIN, INPUT);
   pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, HIGH);
   pinMode(RESET_PIN, INPUT);
 
   WiFi.begin();
@@ -196,13 +198,13 @@ void setup(){
   } else{
     Serial.println("Não há configurações salvas de WiFi");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    WiFi.
-    // BTWifiSetup();
+    //BTWifiSetup();
     if (testWifi()) Serial.println(F("Conectado ao Wi-fi com sucesso!"));
   }
   macAddress = WiFi.macAddress();
   WiFi.setAutoReconnect(true);
-  WiFi.persistent(true);  
+  WiFi.persistent(true);
+  configTime(0, 0, ntpServer);
   firebaseConfig();
   selfUpdateTime = millis();
 }
@@ -211,24 +213,38 @@ void setup(){
 
 void loop(){
   Firebase.ready();
-  //lógica só é aceita se o alarme estiver ligado
 
+  //controle do controle RF
+  if(digitalRead(RF_PIN) && millis() > lastControlClickTime + 1000){
+    lastControlClickTime = millis();
+    if(!activeAlarm){
+      activeAlarm = true;
+      selfUpdateTime = millis();
+      Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/active", true);
+    }else{
+      activeAlarm = false;
+      selfUpdateTime = millis();
+      Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/active", false);
+    }
+  }
+
+  //lógica só é aceita se o alarme estiver ligado
   if(activeAlarm){
     //verifica sensor de proximidade e dispara o alarme
     if(digitalRead(PIR_PIN)){
       if(!triggeredAlarm){
         triggeredAlarm = true;
-        alarm();
+        digitalWrite(BUZZER_PIN, LOW);
         selfUpdateTime = millis();
         if (Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", true))
           createLog(LOG_TYPE_TRIGGERED);
         else
           Serial.println(fbdo.errorReason().c_str());
-        alarmTime = millis();
       }
     }
   }else{
     if(triggeredAlarm){
+      digitalWrite(BUZZER_PIN, HIGH);
       if(!Firebase.RTDB.setBool(&fbdo, "device/"+macAddress+"/triggered", false))
         Serial.println(fbdo.errorReason().c_str());
     }
