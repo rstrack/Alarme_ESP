@@ -30,7 +30,7 @@ unsigned int selfUpdateTime;
 unsigned int resetTime;
 bool resetButtonPressed = false;
 
-bool activeAlarm;
+bool activeAlarm = false;
 bool triggeredAlarm = false;
 
 const char* ntpServer = "pool.ntp.org";
@@ -75,15 +75,14 @@ void firebaseConfig(){
     }
     else{
       Serial.println(F("Dispositivo ja existente no Firebase"));
+      if(Firebase.RTDB.getBool(&fbdo, "/device/"+macAddress+"/active")){
+        activeAlarm = fbdo.to<bool>();
+      }
+      if(!Firebase.RTDB.setBool(&fbdo, "/device/"+macAddress+"/triggered", false)){
+        Serial.println(fbdo.errorReason().c_str());
+      }
     }
     Firebase.RTDB.beginStream(&stream, "/device/"+macAddress+"");
-    if(Firebase.RTDB.getBool(&fbdo, "/device/"+macAddress+"/active")){
-      activeAlarm = fbdo.to<bool>();
-    }
-    else activeAlarm = false;
-    if(!Firebase.RTDB.setBool(&fbdo, "/device/"+macAddress+"/triggered", false)){
-      Serial.println(fbdo.errorReason().c_str());
-    }
     Firebase.RTDB.setStreamCallback(&stream, streamCallback, streamTimeoutCallback);
   }
   else{
@@ -131,10 +130,10 @@ void streamTimeoutCallback(bool timeout){
 void BTWifiSetup(){
   BluetoothSerial SerialBT;
   String deviceName = "DGR-"+String(random(9999));
-  SerialBT.begin(deviceName, true);
+  SerialBT.begin(deviceName);
   Serial.println(F("Esperando credenciais Wi-Fi via Bluetooth..."));
   while(1){
-    if (SerialBT.available()>0){
+    if (SerialBT.available()){
       String data = SerialBT.readString();
       Serial.println(data);
       WiFi.begin(data.substring(0,data.indexOf('\n')).c_str(), data.substring(data.indexOf('\n')+1).c_str());
@@ -197,8 +196,7 @@ void setup(){
     Serial.println(ssid);
   } else{
     Serial.println("Não há configurações salvas de WiFi");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    //BTWifiSetup();
+    BTWifiSetup();
     if (testWifi()) Serial.println(F("Conectado ao Wi-fi com sucesso!"));
   }
   macAddress = WiFi.macAddress();
