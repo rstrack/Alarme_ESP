@@ -88,6 +88,7 @@ void firebaseConfig(){
   else{
     Serial.println(F("Problema na conexão com Firebase."));  
   }
+  Firebase.FCM.setServerKey(FCM_SERVER_KEY);
 }
 
 void streamCallback(FirebaseStream data){
@@ -124,6 +125,22 @@ void streamTimeoutCallback(bool timeout){
     Serial.print(String(stream.httpCode()));
     Serial.print(", reason: ");
     Serial.println(stream.errorReason().c_str());
+  }
+}
+
+void sendNotification(){
+  FCM_Legacy_HTTP_Message msg;
+  String topic = "/topics/";
+  String topic2 = macAddress;
+  topic2.replace(":", "");
+  msg.targets.to = topic + "" + topic2;
+  msg.options.content_available = "application/json";
+  msg.options.time_to_live = "10";
+  msg.options.priority = "high";
+  msg.payloads.notification.title = "AVISO";
+  msg.payloads.notification.body = "Alarme Disparado";
+  if(!Firebase.FCM.send(&fbdo, &msg)){
+    Serial.println(fbdo.errorReason().c_str());
   }
 }
 
@@ -166,7 +183,6 @@ unsigned long getTime() {
   time_t now;
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
-    //Serial.println("Failed to obtain time");
     return(0);
   }
   time(&now);
@@ -238,6 +254,7 @@ void loop(){
           createLog(LOG_TYPE_TRIGGERED);
         else
           Serial.println(fbdo.errorReason().c_str());
+        sendNotification();
       }
     }
   }else{
